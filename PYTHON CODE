@@ -1,0 +1,136 @@
+import socket
+import threading
+import os
+import zlib
+import re
+
+# Server Code
+
+def sanitize_file_name(file_name):
+    """Sanitize the file name to remove invalid characters."""
+    return re.sub(r'[<>:"/\\|?*]', '_', file_name)
+
+def handle_client(conn, addr):
+    print(f"Connection from {addr}")
+
+    try:
+        # Receive and decode metadata (file name and size)
+        raw_metadata = conn.recv(1024)
+        print(f"Raw metadata received: {raw_metadata}")
+        metadata = raw_metadata.decode('utf-8')
+        file_name, file_size = metadata.split('|')
+        file_size = int(file_size)
+
+        # Sanitize the file name
+        file_name = sanitize_file_name(file_name)
+
+        # Create a directory to save files
+        os.makedirs("received_files", exist_ok=True)
+        save_path = os.path.join("received_files", file_name)
+
+        # Receive the compressed file data as binary
+        compressed_data = b''
+        received_bytes = 0
+        while received_bytes < file_size:
+            chunk = conn.recv(4096)
+            if not chunk:
+                break
+            compressed_data += chunk
+            received_bytes += len(chunk)
+            print(f"Received {received_bytes} of {file_size} bytes.")
+
+        # Decompress and save the file
+        with open(save_path, 'wb') as f:
+            f.write(zlib.decompress(compressed_data))
+
+        print(f"File received and saved as {save_path}.")
+
+    except UnicodeDecodeError as e:
+        print(f"Failed to decode metadata: {e}")
+    except ValueError as e:
+        print(f"Failed to parse metadata: {e}")
+    except Exception as e:
+        print(f"Error handling client {addr}: {e}")
+
+    finally:
+        conn.close()
+
+def start_server(host='localhost', port=12345):
+    server_socket = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
+    server_socket.bind((host, port))
+    server_socket.listen(5)
+    print(f"Server listening on {host}:{port}")
+
+    try:
+        while True:
+            conn, addr = server_socket.accept()
+            threading.Thread(target=handle_client, args=(conn, addr), daemon=True).start()
+    except KeyboardInterrupt:
+        print("Server shutting down.")
+    finally:
+        server_socket.close()
+
+# Client Code
+
+def compress_file(file_path):
+    """Compress the file using zlib."""
+    with open(file_path, 'rb') as f:
+        return zlib.compress(f.read())
+
+def send_file(file_path, host='localhost', port=12345):
+    """Send a compressed file to the server."""
+    if not os.path.isfile(file_path):
+        print("Invalid file path. Please check and try again.")
+        return
+
+    file_size = os.path.getsize(file_path)
+    file_name = os.path.basename(file_path)
+
+    print(f"File: {file_name} ({file_size} bytes)")
+
+    compressed_data = compress_file(file_path)
+    compressed_size = len(compressed_data)
+
+    with socket.socket(socket.AF_INET, socket.SOCK_STREAM) as client_socket:
+        try:
+            client_socket.connect((host, port))
+            print(f"Connected to server at {host}:{port}")
+
+            # Send file metadata
+            metadata = f"{file_name}|{compressed_size}"
+            client_socket.sendall(metadata.encode('utf-8'))
+
+            # Send the compressed file data
+            client_socket.sendall(compressed_data)
+
+            print(f"File '{file_name}' sent successfully.")
+
+        except socket.error as e:
+            print(f"Socket error: {e}")
+        except Exception as e:
+            print(f"Error: {e}")
+
+# Main Code
+
+if __name__ == "__main__":
+    print("Select mode:")
+    print("1. Start server")
+    print("2. Send file")
+
+    choice = input("Enter choice (1/2): ").strip()
+
+    if choice == '1':
+        host = input("Enter server host (default: localhost): ").strip() or 'localhost'
+        port = input("Enter server port (default: 12345): ").strip()
+        port = int(port) if port else 12345
+        start_server(host, port)
+
+    elif choice == '2':
+        file_path = input("Enter the path of the image or video file to send: ").strip()
+        host = input("Enter server host (default: localhost): ").strip() or 'localhost'
+        port = input("Enter server port (default: 12345): ").strip()
+        port = int(port) if port else 12345
+        send_file(file_path, host, port)
+
+    else:
+        print("Invalid choice. Exiting.")
